@@ -1,0 +1,12 @@
+Protokoll für das Mock-Interview-Projekt 07.09.2025
+
+Initialisierung des Projekts.
+CSV-Datei und Notebook wurden analysiert. Die Daten sind für das Projekt geeignet.
+Datenbereinigung im Notebook abgeschlossen.
+Explorative Datenanalyse (EDA) im Notebook abgeschlossen.
+Feature Engineering und Clustering im Notebook abgeschlossen.
+Modelltraining im Notebook abgeschlossen.
+Polar-Plot zur Cluster-Analyse hinzugefügt.
+Ergebnisse in der Datenbank gespeichert.
+
+Projekt abgeschlossen.

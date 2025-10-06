@@ -12,3 +12,5 @@ scikit-learn==1.7.2
 seaborn==0.13.2
 sqlalchemy==2.0.43
 plotly
+nbformat
+ipywidgets
