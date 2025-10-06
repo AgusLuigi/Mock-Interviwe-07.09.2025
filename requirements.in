@@ -1,0 +1,14 @@
+branca==0.8.1
+folium==0.20.0
+graphviz==0.21
+ipython==9.5.0
+matplotlib==3.10.6
+numpy==2.3.3
+pandas==2.3.2
+pillow==11.3.0
+psycopg2-binary==2.9.10
+pyarrow==21.0.0
+scikit-learn==1.7.2
+seaborn==0.13.2
+sqlalchemy==2.0.43
+plotly
