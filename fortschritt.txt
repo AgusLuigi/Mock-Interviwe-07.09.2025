@@ -1,5 +1,0 @@
-Schritt 1: Analyse mit NaN -> 0 Strategie durchgeführt. Ergebnisse waren nicht besser.
-Schritt 2: Wechsle zurück zur Median/Modus-Imputation.
-Schritt 3: Hyperparameter-Tuning für das Random Forest Modell durchgeführt. Genauigkeit verbessert, aber immer noch nicht so gut wie im Notebook.
-Schritt 4: Feature-Importance-Analyse durchgeführt und Plot gespeichert.
-Schritt 5: Plane, ein Gradient Boosting Modell zu testen und das Notebook zu refaktorisieren.
