@@ -1,8 +1,9 @@
-# Clustering-App mit Dropdown-Menüs und erweiterter Ellbogen-Einstellung
+# Clustering-App mit Dropdown-Menüs und erweiterter Ellbogen-Einstellung01
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pandas.api.types import is_numeric_dtype
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN, SpectralClustering, Birch
 from sklearn.mixture import GaussianMixture
@@ -11,15 +12,16 @@ from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from typing import Dict, Any, List, Union
 from scipy.stats import rankdata
-from scipy.optimize import linear_sum_assignment # Für die optimale Zuordnung
+from scipy.optimize import linear_sum_assignment
 import warnings
 import ipywidgets as widgets
 from IPython.display import display, clear_output, Markdown
 from ipywidgets import VBox, Dropdown, Button, Output, Label, HTML, SelectMultiple, IntText 
 
-warnings.filterwarnings("ignore")
+# Die Warnungen aus der vorherigen Zelle werden hier ignoriert, da sie im bereinigten Code behoben sind
+warnings.filterwarnings("ignore") 
 
-# WICHTIGE DEFINITION: df_ML (der für das Clustering vorbereitete Dataframe)
+# WICHTIGE DEFINITION: df_ML (der vom benutzer ausgewehlte Aktuelle Dataframe zur ML)
 df_ML = pd.DataFrame() 
 
 class ClusteringApp:
@@ -41,6 +43,7 @@ class ClusteringApp:
         self.X_scaled = None
         self.results = {}
         self.best_method = None
+        self.selected_method_from_viz = None
         self.X_final_features = None 
         self.out = Output()   
         self.max_k = 2
@@ -97,7 +100,7 @@ class ClusteringApp:
                                 # Annahme: 'yes' oder 'wahr' soll 1 sein, alles andere 0
                                 if val_1 == 'yes':
                                     mapping = {val_0: 0, val_1: 1}
-                                elif 'false' in unique_vals and 'true' in unique_vals: # Nur falls dtype nicht bool ist
+                                elif 'false' in unique_vals and 'true' in unique_vals:
                                     mapping = {'false': 0, 'true': 1}
                                 else:
                                     # Generische 0/1 Zuordnung
@@ -317,13 +320,19 @@ class ClusteringApp:
                         sorted_labels = df_temp['Labels'].map(new_mapping).fillna(-1).astype(int).values
                         
                         # FINALE Speicherung der sortierten Labels und Metriken
-                        self.results[name] = {
+                        result_dict = {
                             "Labels": sorted_labels, # <--- HIER WERDEN DIE SORTIERTEN LABELS GESPEICHERT (Größter = 1)
                             "Original_Labels": labels, # <- ORIGINAL Labels (0, 1, 2...) für Kontingenztabelle in Schritt 6
                             "Silhouette": silhouette_score(self.X_scaled, labels), 
                             "CH": calinski_harabasz_score(self.X_scaled, labels),
-                            "DB": davies_bouldin_score(self.X_scaled, labels) # KORREKTER IMPORT-NAME
+                            "DB": davies_bouldin_score(self.X_scaled, labels)
                         }
+                        
+                        # Speichere das Modell selbst, falls es Cluster-Zentren hat (für Feature Importance)
+                        if name in ["KMeans", "GMM (Gaussian Mixture)"]:
+                            result_dict["Model"] = model
+                        
+                        self.results[name] = result_dict
                         print(f"  - **{name}** erfolgreich berechnet. Muster: {num_clusters} (Sortiert 1, 2, ...)")
                     else:
                         print(f"  - **{name}** übersprungen (Musterzahl {num_clusters} entspricht nicht k={k} oder ist trivial).")
@@ -363,7 +372,7 @@ class ClusteringApp:
                     
                     self.results["DBSCAN"] = {
                         "Labels": sorted_labels,
-                        "Original_Labels": labels, # <- ORIGINAL Labels (0, 1, 2...)
+                        "Original_Labels": labels,
                         "Silhouette": silhouette_score(X_scaled_clean, labels_clean),
                         "CH": calinski_harabasz_score(X_scaled_clean, labels_clean),
                         "DB": davies_bouldin_score(X_scaled_clean, labels_clean)
@@ -380,7 +389,7 @@ class ClusteringApp:
                 return
 
             res_df = pd.DataFrame([
-                {"Methode": k, **{k:v for k,v in v.items() if k not in ['Labels', 'Original_Labels']}} for k, v in self.results.items()
+                {"Methode": k, **{k:v for k,v in v.items() if k not in ['Labels', 'Original_Labels', 'Model']}} for k, v in self.results.items()
             ]).drop(columns=[]).set_index("Methode")
             
             res_df['Norm_Silhouette'] = self._normalize_metric(res_df['Silhouette'], ascending=True)
@@ -390,7 +399,8 @@ class ClusteringApp:
             res_df['Total Score'] = res_df[['Norm_Silhouette', 'Norm_CH', 'Norm_DB']].mean(axis=1).round(3)
             
             self.best_method = res_df['Total Score'].idxmax()
-            
+            self.selected_method_from_viz = self.best_method
+
             comparison_cols = ['Silhouette', 'CH', 'DB', 'Total Score']
             res_df = res_df[comparison_cols]
             res_df = res_df.sort_values(by="Total Score", ascending=False)
@@ -425,14 +435,14 @@ class ClusteringApp:
         
         def viz(b):
             method = method_dd.value
+            self.selected_method_from_viz = method
             with viz_out:
                 clear_output()
                 self.plot_clusters(method)
                 self.analyze_clusters(method)
                 
         show_btn.on_click(viz)
-        
-        # In diesem Schritt wird noch nichts an df_ML zugewiesen, nur die besten Labels zurückgegeben
+
         return self.results[self.best_method]["Labels"] if self.best_method else None
 
     # SCHRITT 5: DESKRIPTIVE MUSTER-ANALYSE (Interpretation) - MIT SORTIERUNG NACH N
@@ -464,8 +474,11 @@ class ClusteringApp:
                 if original_col_name in self.original_df.columns:
                     original_subset = self.original_df.loc[subset.index, original_col_name]
                     dtype_orig = original_subset.dtype
-
-                    if np.issubdtype(dtype_orig, np.number):
+                    
+                    # ------------------------------------------------
+                    # Verwende is_numeric_dtype aus pandas.api.types
+                    # ------------------------------------------------
+                    if is_numeric_dtype(dtype_orig): 
                         cluster_data[f'{original_col_name} (Mean)'] = original_subset.mean().round(2)
                     elif dtype_orig == 'object' or dtype_orig == 'category' or dtype_orig == 'bool':
                         mode_val = original_subset.mode()
@@ -546,29 +559,85 @@ class ClusteringApp:
         with self.out:
              print("✅ Visualisierung abgeschlossen.")
     
-    def execute_assignment_and_comparison(self, solution_col_name: str, df_ML_ref: pd.DataFrame):
+    # NEU: Methode zur Berechnung und Visualisierung der Merkmalswichtigkeit (Feature Importance)
+    def _calculate_and_plot_feature_importance(self, method: str):
+        """
+        Berechnet die Wichtigkeit der Features basierend auf der Standardabweichung 
+        der Cluster-Zentren und plottet die Top 15.
+        Gilt nur für Methoden mit Zentren (KMeans, GMM).
+        """
+        if method not in self.results or "Model" not in self.results[method]:
+            print(f"\n⚠️ Merkmalswichtigkeit für **{method}** übersprungen: Modell hat keine Cluster-Zentren (oder ist DBSCAN/Agglomerative).")
+            return
+
+        try:
+            model = self.results[method]["Model"]
+            feature_names = self.X_final_features.columns.tolist()
+            
+            # Holt die Cluster-Zentren oder Mittelwerte (für GMM)
+            if hasattr(model, 'cluster_centers_'): # KMeans
+                centers = model.cluster_centers_
+            elif hasattr(model, 'means_'): # GMM
+                centers = model.means_
+            else:
+                 print(f"\n⚠️ Merkmalswichtigkeit für **{method}** übersprungen: Modell hat keine implementierten Zentren/Mittelwerte.")
+                 return
+
+            # Berechnung der Standardabweichung der Zentren/Mittelwerte über die Cluster hinweg
+            # Ein großer Wert bedeutet große Variation des Merkmals zwischen den Clustern -> hohe Wichtigkeit
+            feature_std = centers.std(axis=0)
+            
+            # Erstelle DataFrame für die Visualisierung
+            df_importance = pd.DataFrame({
+                'Merkmal': feature_names,
+                'Wichtigkeit (Std. der Zentren)': feature_std
+            }).sort_values(by='Wichtigkeit (Std. der Zentren)', ascending=False).head(15)
+
+            with self.out:
+                print("\n==================================================")
+                print(f"💡 MERKMALSWICHTIGKEIT ({method})")
+                print("==================================================")
+                print("Die Wichtigkeit basiert auf der Standardabweichung des Merkmals über alle Cluster-Zentren (hohe Streuung = wichtiger).")
+                
+                plt.figure(figsize=(8, 6))
+                sns.barplot(x='Wichtigkeit (Std. der Zentren)', y='Merkmal', data=df_importance, palette="plasma")
+                plt.title(f"Einflussreichste Merkmale für die Cluster-Bildung ({method})")
+                plt.xlabel("Wichtigkeit (Standardabweichung der Cluster-Zentren)")
+                plt.ylabel("Merkmal")
+                plt.tight_layout()
+                plt.show()
+                
+        except Exception as e:
+            with self.out:
+                print(f"\n❌ FEHLER bei der Berechnung/Visualisierung der Merkmalswichtigkeit: {type(e).__name__}.")
+
+    # NEU: Methode zur Cluster-Zuordnung (Cluster_ML) und Vergleich (TEMP_Clear_ML) - KORRIGIERT
+    def execute_assignment_and_comparison(self, solution_col_name: str, df_ML_ref: pd.DataFrame, selected_method: str = None):
         """Führt Cluster-Zuweisung (Cluster_ML) und optional den Vergleich (TEMP_Clear_ML) durch."""
         
         global df_ML
         df_ML = df_ML_ref
         
-        best_method = self.best_method
-        if best_method is None:
-            print("❌ FEHLER: Keine beste Methode gefunden. Zuordnung nicht möglich.")
+        # KORREKTUR: Verwende die manuell gewählte Methode, ansonsten die beste Methode
+        assignment_method = selected_method if selected_method in self.results else self.best_method
+
+        if assignment_method is None:
+            print("❌ FEHLER: Keine Methode zur Zuordnung gefunden. Zuordnung nicht möglich.")
             return
 
         print("\n==================================================")
-        print(f"📊 SCHRITT 7: MUSTER-ZUORDNUNG & VERGLEICH")
+        print(f"📊 SCHRITT 7: MUSTER-ZUORDNUNG & VERGLEICH (Methode: {assignment_method})")
         print("==================================================")
         
         # 1. Cluster_ML Zuweisung (Labels 1, 2, 3...)
-        sorted_labels = self.results[best_method]["Labels"]
+        sorted_labels = self.results[assignment_method]["Labels"]
         cluster_series_sorted = pd.Series(sorted_labels, index=self.df.index)
         
         df_ML['Cluster_ML'] = pd.Series(pd.NA, index=df_ML.index, dtype='Int64') 
         valid_indices = df_ML.index.intersection(cluster_series_sorted.index)
         df_ML.loc[valid_indices, 'Cluster_ML'] = cluster_series_sorted.loc[valid_indices].values 
         
+        # BEREINIGT: Entfernen von '\'
         print(f"✅ Spalte **'Cluster_ML'** (Sortierte IDs: 1, 2, 3...) in **df_ML** eingebunden.")
 
         # 2. Deskriptive Profilanalyse (Jetzt als Teil der Ausführung)
@@ -581,10 +650,8 @@ class ClusteringApp:
                  print(f"❌ FEHLER: Die gewählte Lösungsspalte **'{solution_col_name}'** existiert nicht in df_ML.")
                  return
 
-            # HIER BEGINNT DIE KORREKTUR: Verwendung von 'Cluster_ML' statt 'Cluster_Original' für den Vergleich
-            df_compare = df_ML.loc[self.df.index].copy() # Nur Zeilen, die analysiert wurden
+            df_compare = df_ML.loc[self.df.index].copy()
             
-            # NEU: Cluster_ML (Sortierte Labels 1, 2, 3...) für den Vergleich verwenden
             df_compare['Cluster_ML_Sample'] = df_compare['Cluster_ML'] 
 
             df_compare.dropna(subset=['Cluster_ML_Sample', solution_col_name], inplace=True)
@@ -593,16 +660,14 @@ class ClusteringApp:
                 print("❌ WARNUNG: Keine übereinstimmenden Zeilen für den Vergleich nach NaN-Drop im Sample.")
                 return
 
-            # Kontingenztabelle und Zuordnung (Basis ist jetzt Cluster_ML_Sample)
+            # Kontingenztabelle und Zuordnung
             contingency = pd.crosstab(df_compare[solution_col_name], df_compare['Cluster_ML_Sample'])
             cost_matrix = -contingency.values
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
-            cluster_mapping = {contingency.index[r]: contingency.columns[c] for r, c in zip(row_ind, col_ind)}
-            reverse_mapping = {v: k for k, v in cluster_mapping.items()}
+            cluster_mapping = {contingency.columns[c]: contingency.index[r] for r, c in zip(row_ind, col_ind)}
             
-            # Berechnung des Match-Scores
-            # NEU: Mapping verwendet Cluster_ML_Sample
-            df_compare['Predominant_Category'] = df_compare['Cluster_ML_Sample'].map(reverse_mapping)
+            # NEUE KORREKTUR: Richtige Zuordnung vom Cluster zur Predominant Category
+            df_compare['Predominant_Category'] = df_compare['Cluster_ML_Sample'].map(cluster_mapping)
             df_compare['TEMP_Clear_ML_Match'] = df_compare[solution_col_name] == df_compare['Predominant_Category']
             
             n_abw = (~df_compare['TEMP_Clear_ML_Match']).sum()
@@ -612,7 +677,7 @@ class ClusteringApp:
             temp_clear_ml_series = pd.Series(pd.NA, index=df_ML.index, dtype=object)
             
             temp_clear_ml_series.loc[df_compare.index] = df_compare.apply(
-                # NEU: Cluster_ML_Sample (Sortierte IDs) für die Textausgabe verwenden
+                # Cluster_ML_Sample (Sortierte IDs) für die Textausgabe verwenden
                 lambda row: f"{df_ML.loc[row.name, solution_col_name]}+Cluster_{int(row['Cluster_ML_Sample'])}" if row['TEMP_Clear_ML_Match'] else f"Cluster_{int(row['Cluster_ML_Sample'])}",
                 axis=1
             )
@@ -621,9 +686,10 @@ class ClusteringApp:
             noise_indices = df_ML.index.intersection(cluster_series_sorted[cluster_series_sorted == -1].index)
             temp_clear_ml_series.loc[noise_indices] = temp_clear_ml_series.loc[noise_indices].fillna("Cluster_-1")
 
-            df_ML['TEMP_Clear_ML'] = temp_clear_ml_series.loc[df_ML.index] # Wichtig: Index-Ausrichtung
+            df_ML['TEMP_Clear_ML'] = temp_clear_ml_series.loc[df_ML.index]
             
-            print(f"✅ Spalte **'TEMP\_Clear\_ML'** in **df_ML** gespeichert (Vergleich mit '{solution_col_name}').")
+            # BEREINIGT: Entfernen von '\'
+            print(f"✅ Spalte **'TEMP_Clear_ML'** in **df_ML** gespeichert (Vergleich mit '{solution_col_name}').")
             
             # Ausgabe der Kontingenztabelle und Heatmap
             print("\n--- Kontingenztabelle für Vergleich ---")
@@ -636,7 +702,12 @@ class ClusteringApp:
             plt.xlabel("Cluster (Cluster_ML IDs)")
             plt.show()
 
-        print("\n✅ Schritt 7 abgeschlossen. df\_ML enthält nun die Zuordnung(en).")
+            # NEU: Merkmalswichtigkeit (nur im Szenario B)
+            self._calculate_and_plot_feature_importance(assignment_method)
+
+
+        # BEREINIGT: Entfernen von '\'
+        print("\n✅ Schritt 7 abgeschlossen. df_ML enthält nun die Zuordnung(en).")
         
     # NEU: Methode zur Durchführung der deskriptiven Analyse in df_ML (Universell)
     def perform_descriptive_analysis(self, df_ML_ref: pd.DataFrame):
@@ -683,6 +754,7 @@ class ClusteringApp:
             display(df_cluster_profile)
             
         else:
+            # BEREINIGT: Entfernen von '\'
             print("\n⚠️ WARNUNG: Keine Cluster-Spalte ('Cluster_ML') in df_ML gefunden. Profilierung übersprungen.")
 #---
 # Clustering-Tool: Startet den interaktiven Prozess
@@ -705,7 +777,7 @@ class ClusteringTool:
         self.n_init = 'auto'
         self.app = None 
         self.best_labels = None         
-        self.comparison_result_df = None # Speichert das Ergebnis des Vergleichs für Schritt 7
+        self.comparison_result_df = None
 
         self.cleaning_options = {
             "Vorschläge zur Vorverarbeitung für ML (TEMP_Clear_ML)": "TEMP_Clear_ML", 
@@ -743,11 +815,13 @@ class ClusteringTool:
                 global df_ML
                 df_ML = self.selected_df.copy() 
                 
-                print(f"✅ DataFrame **'{self.selected_df_name}'** ausgewählt und als Arbeits-Dataframe **df_ML** kopiert.")            
+                # BEREINIGT: Entfernen von '\'
+                print(f"✅ DataFrame **'{self.selected_df_name}'** ausgewählt und als Arbeits-Dataframe **df_ML** kopiert.")
             df_dd.disabled = True
             b.disabled = True            
             self.setup_column_selection()            
-        self._add_step_widgets("1️⃣ DataFrame auswählen (wird zu df\_ML kopiert):",[df_dd], on_ok_click,"OK (DataFrame wählen)")
+        # BEREINIGT: Entfernen von '\'
+        self._add_step_widgets("1️⃣ DataFrame auswählen (wird zu df_ML kopiert):",[df_dd], on_ok_click,"OK (DataFrame wählen)")
 
     def setup_column_selection(self):
         column_options = self.selected_df.columns.tolist()
@@ -869,7 +943,8 @@ class ClusteringTool:
                 print(f"✅ Kategoriale Bereinigungen gespeichert.")
                 for col, action in self.cat_cleaning_map.items():
                     if action == "TEMP_Clear_ML":
-                         print(f"\n✅ **{col}** - ML-Bereinigung (**TEMP\_Clear\_ML**) wird **automatisch** in Schritt 1 angewendet.")
+                         # BEREINIGT: Entfernen von '\'
+                         print(f"\n✅ **{col}** - ML-Bereinigung (**TEMP_Clear_ML**) wird **automatisch** in Schritt 1 angewendet.")
                     elif action == "none":
                          print(f"\n✅ **{col}** - **Ausschluss** von weiterer kategorialer Bereinigung (d.h. sie wird unbereinigt als One-Hot-Encoding verwendet).")
             
@@ -907,7 +982,8 @@ class ClusteringTool:
                 clear_output() 
                 print(f"✅ n_init für KMeans: **'{self.n_init}'** ausgewählt.")
             self._execute_preparation_and_plots()
-        self._add_step_widgets("4b: Ellbogen-Stabilität (n\_init) einstellen:",[Label("Steuert die Anzahl der KMeans-Läufe."), n_init_dd], run_plots,"OK (Daten vorbereiten & Ellbogen-Plots generieren)" )        
+        # BEREINIGT: Entfernen von '\'
+        self._add_step_widgets("4b: Ellbogen-Stabilität (n_init) einstellen:",[Label("Steuert die Anzahl der KMeans-Läufe."), n_init_dd], run_plots,"OK (Daten vorbereiten & Ellbogen-Plots generieren)" )        
 
     def _execute_preparation_and_plots(self):
         self.app = ClusteringApp(
@@ -938,13 +1014,13 @@ class ClusteringTool:
             b.disabled = True
             self.app.compare_methods(k)
             self.best_labels = self.app.show_visualization_controls()  
-            self.setup_comparison_selection() # Weiter zu Schritt 6
+            self.setup_comparison_selection()
         self._add_step_widgets("5️⃣ Musterzahl (k) auswählen:",[Label("Basierend auf den Plots (Schritt 2), wählen Sie die gewünschte Musterzahl 'k'."), k_dd], run, "Clustering Methoden vergleichen & Visualisierung starten")
     
-    # SCHRITT 6: LÖSUNGSSPALTE WÄHLEN
+    # SCHRITT 6: LÖSUNGSSPALTE WÄHLEN - KORRIGIERT
     def setup_comparison_selection(self):
-        all_cols = self.selected_df.columns.tolist() 
-        comparison_options = ["Kein Vergleich"] + all_cols 
+        all_cols = self.selected_df.columns.tolist()
+        comparison_options = ["Kein Vergleich"] + all_cols
         solution_dd = Dropdown(options=comparison_options, 
                                value="Kein Vergleich", 
                                description="Lösungsspalte (Validation Column):", 
@@ -953,14 +1029,22 @@ class ClusteringTool:
             self.solution_col_name = solution_dd.value
             with output_for_step:
                 clear_output()
-                if self.app.best_method is None:
-                    print("❌ FEHLER: Es wurde keine beste Methode gefunden. Führen Sie **Schritt 5** erneut aus.")
+                if self.app.selected_method_from_viz is None:
+                    print("❌ FEHLER: Es wurde keine Methode zur Zuordnung gefunden. Führen Sie **Schritt 5** erneut aus.")
                     return
                 print(f"✅ Lösungsspalte gewählt: **'{self.solution_col_name}'**.")
-                print("➡️ Fahren Sie mit **Schritt 7** fort, um die Muster zuzuordnen und den Vergleich durchzuführen.")
-            solution_dd.disabled = True
-            b.disabled = True
-            self.setup_final_assignment() # Weiter zu Schritt 7 (Muster-Zuordnung)
+                
+                solution_dd.disabled = True
+                b.disabled = True
+                
+                # KORREKTUR: Wenn "Kein Vergleich" gewählt ist, überspringe den Vergleichsschritt (implizit in Schritt 7)
+                if self.solution_col_name == "Kein Vergleich":
+                    print("➡️ **Kein Vergleich** ausgewählt (Szenario A). Fahren Sie mit **Schritt 7** fort, um nur die Muster zuzuordnen.")
+                else:
+                    print("➡️ Vergleichsspalte ausgewählt (Szenario B). Fahren Sie mit **Schritt 7** fort, um die Muster zuzuordnen, den Vergleich und die **Merkmalswichtigkeit** durchzuführen.")
+                    
+                self.setup_final_assignment()
+                
         self._add_step_widgets("6️⃣ Lösungsspalte (Validation Column) wählen:",[Label("Diese Spalte wird für den Muster-Vergleich und die Generierung der Spalte **'TEMP_Clear_ML'** in df_ML verwendet."), solution_dd], run_comparison,"OK (Vergleichs-Spalte speichern)",btn_style='info')
 
     # SCHRITT 7: MUSTER-ZUORDNUNG (Cluster_ML) UND VERGLEICH (TEMP_Clear_ML) DURCHFÜHREN
@@ -972,20 +1056,33 @@ class ClusteringTool:
                 if 'df_ML' not in globals() or globals()['df_ML'].empty:
                      df_ML = self.sampled_df.copy()
                      globals()['df_ML'] = df_ML
-                     print("ℹ️ df\_ML wurde aus dem Sample-DataFrame re-initialisiert.")
-                if self.app is None or self.app.best_method is None:
+                     # BEREINIGT: Entfernen von '\'
+                     print("ℹ️ df_ML wurde aus dem Sample-DataFrame re-initialisiert.")
+                if self.app is None or self.app.selected_method_from_viz is None:
                     print("❌ FEHLER: ClusteringApp wurde nicht richtig initialisiert oder Schritt 5 wurde nicht ausgeführt.")
                     return
-                # Führt Zuweisung (Cluster_ML) und optionalen Vergleich (TEMP_Clear_ML) durch.
-                self.app.execute_assignment_and_comparison(self.solution_col_name, df_ML)
-                print("\n✅ Schritt 7 abgeschlossen. df\_ML enthält nun die Zuordnung(en).")
-                print("➡️ Fahren Sie mit **Schritt 8** fort, um die finalen Spalten zuzuordnen und df\_ML zu löschen.")
+                
+                self.app.execute_assignment_and_comparison(self.solution_col_name, df_ML, self.app.selected_method_from_viz)
+                
+                # BEREINIGT: Entfernen von '\'
+                print("\n✅ Schritt 7 abgeschlossen. df_ML enthält nun die Zuordnung(en).")
+                print("➡️ Fahren Sie mit **Schritt 8** fort, um die finalen Spalten zuzuordnen und df_ML zu löschen.")
             b.disabled = True
-            self.setup_final_cleanup() # Weiter zu Schritt 8 (Speicherung und Löschung)
+            self.setup_final_cleanup()
         
+        # Logik, die den Titel für den Button anpasst
+        if self.solution_col_name and self.solution_col_name != "Kein Vergleich":
+            # BEREINIGT: Entfernen von '\'
+            label_text = "Dieser Schritt fügt **Cluster_ML** und **TEMP_Clear_ML** (Vergleich) in den Arbeits-DataFrame **df_ML** ein und generiert die **Merkmalswichtigkeit**."
+        else:
+            # BEREINIGT: Entfernen von '\'
+            label_text = "Dieser Schritt fügt **Cluster_ML** in den Arbeits-DataFrame **df_ML** ein und generiert die finale deskriptive Cluster-Analyse (Kein Vergleich und keine Merkmalswichtigkeit)."
+
         self._add_step_widgets(
-            "7️⃣ Cluster-Zuordnung (Cluster\_ML) & Vergleich (TEMP\_Clear\_ML) durchführen:",
-            [Label("Dieser Schritt fügt **Cluster\_ML** und optional **TEMP\_Clear\_ML** (falls in Schritt 6 gewählt) in den Arbeits-DataFrame **df\_ML** ein."), 
+            # BEREINIGT: Entfernen von '\'
+            "7️⃣ Cluster-Zuordnung (Cluster_ML) & Vergleich (TEMP_Clear_ML) durchführen:",
+            [Label(f"Cluster-Zuordnung erfolgt mit der in **Schritt 4** gewählten Methode: **{self.app.selected_method_from_viz if self.app and self.app.selected_method_from_viz else 'Nicht gewählt/Beste'}**."), 
+             Label(label_text), 
              Label("Er generiert auch die finale deskriptive Cluster-Analyse.")],
             assign_musters_and_compare,
             "OK (Muster zuordnen & Analyse generieren)",
@@ -1002,8 +1099,9 @@ class ClusteringTool:
                 target_df_name = self.selected_df_name
                 
                 if assign_dd.value == "assign":
+                    # BEREINIGT: Entfernen von '\'
                     if 'df_ML' not in globals() or globals()['df_ML'].empty or 'Cluster_ML' not in globals()['df_ML'].columns:
-                        print("❌ FEHLER: df\_ML enthält keine 'Cluster\_ML' Spalte. Führen Sie **Schritt 7** aus.")
+                        print("❌ FEHLER: df_ML enthält keine 'Cluster_ML' Spalte. Führen Sie **Schritt 7** aus.")
                         return
                     # 1. Zuweisung an das globale, vom Benutzer gewählte DataFrame (Weiterarbeiten)
                     if target_df_name in globals() and isinstance(globals()[target_df_name], pd.DataFrame):
@@ -1018,16 +1116,19 @@ class ClusteringTool:
                             df_target['TEMP_Clear_ML'].update(df_ML['TEMP_Clear_ML'])
                         globals()[target_df_name] = df_target
                         target_name_display = f"**{target_df_name}**"
-                        print(f"✅ Finale Spalten **'Cluster\_ML'** und optional **'TEMP\_Clear\_ML'** in {target_name_display} **aktualisiert**.")
+                        # BEREINIGT: Entfernen von '\'
+                        print(f"✅ Finale Spalten **'Cluster_ML'** und optional **'TEMP_Clear_ML'** in {target_name_display} **aktualisiert**.")
                     # 2. Lösche df_ML nach der finalen Zuweisung
                     if 'df_ML' in globals():
                         del globals()['df_ML']
                         print("\n🗑️ Der Arbeits-DataFrame **df_ML** wurde aus dem globalen Bereich entfernt (Aufgabe vollendet).")
                 else:
-                    print("✅ Analyse abgeschlossen. Die DataFrames wurden nicht verändert (df\_ML bleibt ungelöscht).")
+                    # BEREINIGT: Entfernen von '\'
+                    print("✅ Analyse abgeschlossen. Die DataFrames wurden nicht verändert (df_ML bleibt ungelöscht).")
                 assign_dd.disabled = True
                 b.disabled = True
-        self._add_step_widgets("8️⃣ Finale Speicherung & Bereinigung (Löscht df\_ML):",
+        # BEREINIGT: Entfernen von '\'
+        self._add_step_widgets("8️⃣ Finale Speicherung & Bereinigung (Löscht df_ML):",
                                [Label("Überträgt die Cluster-Ergebnisse in das Ausgangs-DataFrame und löscht den temporären Arbeits-DataFrame."), assign_dd],
                                final_cleanup,
                                "OK (Finale Speicherung)",
